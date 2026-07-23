@@ -15,7 +15,26 @@ BATCH_SIZE = 32
 
 def _marching_cubes(volume, level=0):
     verts, faces, _, _ = measure.marching_cubes(volume, level)
-    return verts[faces].reshape((-1, 3))
+    return verts, faces
+
+def _surface_nets(volume, level=0):
+    try:
+        from . import _meshing
+        return _meshing.surface_nets_extract(volume)
+    except ImportError:
+        raise NotImplementedError("Cython extension not compiled. Run 'python setup.py build_ext --inplace' or 'pip install -e .'")
+
+def _gradient(sdf, P, epsilon=1e-5):
+    # TODO: Implement numerical gradient for Dual Contouring
+    # Compute central difference for each axis
+    raise NotImplementedError("Gradient not yet implemented")
+
+def _dual_contouring(sdf, X, Y, Z, volume, qef_threshold):
+    try:
+        from . import _meshing
+        return _meshing.dual_contouring_extract(volume, qef_threshold)
+    except ImportError:
+        raise NotImplementedError("Cython extension not compiled. Run 'python setup.py build_ext --inplace' or 'pip install -e .'")
 
 def _cartesian_product(*arrays):
     la = len(arrays)
@@ -36,28 +55,24 @@ def _skip(sdf, job):
     r = abs(sdf(np.array([(x, y, z)])).reshape(-1)[0])
     d = np.linalg.norm(np.array((x-x0, y-y0, z-z0)))
     if r <= d:
-        return False
+        return False, 0
     corners = np.array(list(itertools.product((x0, x1), (y0, y1), (z0, z1))))
     values = sdf(corners).reshape(-1)
     same = np.all(values > 0) if values[0] > 0 else np.all(values < 0)
-    return same
+    sign = 1 if values[0] > 0 else -1
+    return same, sign
 
-def _worker(sdf, job, step, sparse):
+def _worker(sdf, job_info, step, sparse):
+    indices, job = job_info
     X, Y, Z = job
-    if sparse and _skip(sdf, job):
-        return None
-        # return _debug_triangles(X, Y, Z)
+    if sparse:
+        same, sign = _skip(sdf, job)
+        if same:
+            return indices, None, sign
     P = _cartesian_product(X, Y, Z)
     shape = (len(X), len(Y), len(Z))
     volume = sdf(P).reshape(shape)
-    try:
-        points = _marching_cubes(volume)
-    except Exception:
-        return []
-        # return _debug_triangles(X, Y, Z)
-    scale = np.array([X[1] - X[0], Y[1] - Y[0], Z[1] - Z[0]])
-    offset = np.array([X[0], Y[0], Z[0]])
-    return points * scale + offset
+    return indices, volume, 0
 
 def _estimate_bounds(sdf):
     # TODO: raise exception if bound estimation fails
@@ -85,7 +100,8 @@ def generate(
         sdf,
         step=None, bounds=None, samples=SAMPLES,
         workers=WORKERS, batch_size=BATCH_SIZE,
-        verbose=True, sparse=True):
+        verbose=True, sparse=True, method='marching_cubes',
+        qef_threshold=1e-3):
 
     start = time.time()
 
@@ -112,56 +128,82 @@ def generate(
     Z = np.arange(z0, z1, dz)
 
     s = batch_size
-    Xs = [X[i:i+s+1] for i in range(0, len(X), s)]
-    Ys = [Y[i:i+s+1] for i in range(0, len(Y), s)]
-    Zs = [Z[i:i+s+1] for i in range(0, len(Z), s)]
-
-    batches = list(itertools.product(Xs, Ys, Zs))
+    x_indices = list(range(0, len(X), s))
+    y_indices = list(range(0, len(Y), s))
+    z_indices = list(range(0, len(Z), s))
+    
+    batches = []
+    for ix in x_indices:
+        for iy in y_indices:
+            for iz in z_indices:
+                job = (X[ix:ix+s], Y[iy:iy+s], Z[iz:iz+s])
+                batches.append(((ix, iy, iz), job))
+                
     num_batches = len(batches)
-    num_samples = sum(len(xs) * len(ys) * len(zs)
-        for xs, ys, zs in batches)
+    num_samples = len(X) * len(Y) * len(Z)
 
     if verbose:
         print('%d samples in %d batches with %d workers' %
             (num_samples, num_batches, workers))
 
-    points = []
+    global_vol = np.zeros((len(X), len(Y), len(Z)), dtype=np.float64)
     skipped = empty = nonempty = 0
     bar = progress.Bar(num_batches, enabled=verbose)
     pool = ThreadPool(workers)
     f = partial(_worker, sdf, step=(dx, dy, dz), sparse=sparse)
-    for result in pool.imap(f, batches):
+    for (ix, iy, iz), vol_block, sign in pool.imap(f, batches):
         bar.increment(1)
-        if result is None:
+        if vol_block is None:
             skipped += 1
-        elif len(result) == 0:
-            empty += 1
+            sx, sy, sz = min(s, len(X)-ix), min(s, len(Y)-iy), min(s, len(Z)-iz)
+            global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = sign * 1e3
         else:
             nonempty += 1
-            points.extend(result)
+            sx, sy, sz = vol_block.shape
+            global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = vol_block
     bar.done()
 
     if verbose:
-        print('%d skipped, %d empty, %d nonempty' % (skipped, empty, nonempty))
-        triangles = len(points) // 3
+        print('%d skipped, %d nonempty blocks evaluated' % (skipped, nonempty))
+        
+    try:
+        if method == 'marching_cubes':
+            verts, faces = _marching_cubes(global_vol)
+        elif method == 'surface_nets':
+            verts, faces = _surface_nets(global_vol)
+        elif method == 'dual_contouring':
+            verts, faces = _dual_contouring(sdf, X, Y, Z, global_vol, qef_threshold)
+        else:
+            raise ValueError(f"Unknown meshing method: {method}")
+    except Exception as e:
+        print(f"Meshing exception in global evaluation ({method}): {e}")
+        verts, faces = np.empty((0, 3)), np.empty((0, 3), dtype=int)
+
+    scale = np.array([X[1] - X[0], Y[1] - Y[0], Z[1] - Z[0]])
+    offset = np.array([X[0], Y[0], Z[0]])
+    if len(verts) > 0:
+        verts = verts * scale + offset
+
+    if verbose:
+        triangles = len(faces)
         seconds = time.time() - start
         print('%d triangles in %g seconds' % (triangles, seconds))
 
-    return points
+    return verts, faces
 
 def save(path, *args, **kwargs):
-    points = generate(*args, **kwargs)
+    verts, faces = generate(*args, **kwargs)
     if path.lower().endswith('.stl'):
+        points = verts[faces].reshape((-1, 3))
         stl.write_binary_stl(path, points)
     else:
-        mesh = _mesh(points)
+        mesh = _mesh(verts, faces)
         mesh.write(path)
 
-def _mesh(points):
+def _mesh(verts, faces):
     import meshio
-    points, cells = np.unique(points, axis=0, return_inverse=True)
-    cells = [('triangle', cells.reshape((-1, 3)))]
-    return meshio.Mesh(points, cells)
+    cells = [('triangle', faces)]
+    return meshio.Mesh(verts, cells)
 
 def _debug_triangles(X, Y, Z):
     x0, x1 = X[0], X[-1]

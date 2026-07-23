@@ -1,4 +1,14 @@
-from setuptools import setup
+from setuptools import setup, Extension
+from Cython.Build import cythonize
+import numpy
+
+ext_modules = cythonize([
+    Extension(
+        "sdf._meshing",
+        ["sdf/_meshing.pyx"],
+        include_dirs=[numpy.get_include()]
+    )
+])
 
 setup(
     name='sdf',
@@ -14,6 +24,7 @@ setup(
         'scikit-image>=0.17',
         'scipy',
         'Pillow',
+        'Cython',
     ],
     license='MIT',
     classifiers=(
@@ -23,5 +34,7 @@ setup(
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Cython',
     ),
+    ext_modules=ext_modules,
 )
