@@ -345,6 +345,37 @@ def scale(other, factor):
     return f
 
 @op3
+def multmatrix(other, matrix):
+    M = np.array(matrix)
+    if M.shape == (3, 4):
+        M = np.vstack((M, [0, 0, 0, 1]))
+    elif M.shape == (4, 4):
+        pass
+    else:
+        raise ValueError("Matrix must be 3x4 or 4x4")
+    
+    M_inv = np.linalg.inv(M)
+    A = M[:3, :3]
+    _, S, _ = np.linalg.svd(A)
+    m = np.min(S)
+    
+    R_inv_T = M_inv[:3, :3].T
+    t_inv = M_inv[:3, 3]
+    
+    if np.isclose(m, 1.0):
+        def f(p):
+            p_orig = np.dot(p, R_inv_T)
+            p_orig += t_inv
+            return other(p_orig)
+    else:
+        def f(p):
+            p_orig = np.dot(p, R_inv_T)
+            p_orig += t_inv
+            return other(p_orig) * m
+    return f
+
+
+@op3
 def rotate(other, angle, vector=Z):
     x, y, z = _normalize(vector)
     s = np.sin(angle)
