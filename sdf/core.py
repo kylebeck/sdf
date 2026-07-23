@@ -7,7 +7,7 @@ import itertools
 import numpy as np
 import time
 
-from . import progress, stl
+from . import progress, stl, backend as b
 
 WORKERS = multiprocessing.cpu_count()
 SAMPLES = 2 ** 22
@@ -101,7 +101,7 @@ def generate(
         step=None, bounds=None, samples=SAMPLES,
         workers=WORKERS, batch_size=BATCH_SIZE,
         verbose=True, sparse=True, method='marching_cubes',
-        qef_threshold=1e-3):
+        qef_threshold=1e-3, device='auto', gpu_batch_size=2**20):
 
     start = time.time()
 
@@ -127,44 +127,93 @@ def generate(
     Y = np.arange(y0, y1, dy)
     Z = np.arange(z0, z1, dz)
 
-    s = batch_size
-    x_indices = list(range(0, len(X), s))
-    y_indices = list(range(0, len(Y), s))
-    z_indices = list(range(0, len(Z), s))
-    
-    batches = []
-    for ix in x_indices:
-        for iy in y_indices:
-            for iz in z_indices:
-                job = (X[ix:ix+s], Y[iy:iy+s], Z[iz:iz+s])
-                batches.append(((ix, iy, iz), job))
-                
-    num_batches = len(batches)
     num_samples = len(X) * len(Y) * len(Z)
 
-    if verbose:
-        print('%d samples in %d batches with %d workers' %
-            (num_samples, num_batches, workers))
-
-    global_vol = np.zeros((len(X), len(Y), len(Z)), dtype=np.float64)
-    skipped = empty = nonempty = 0
-    bar = progress.Bar(num_batches, enabled=verbose)
-    pool = ThreadPool(workers)
-    f = partial(_worker, sdf, step=(dx, dy, dz), sparse=sparse)
-    for (ix, iy, iz), vol_block, sign in pool.imap(f, batches):
-        bar.increment(1)
-        if vol_block is None:
-            skipped += 1
-            sx, sy, sz = min(s, len(X)-ix), min(s, len(Y)-iy), min(s, len(Z)-iz)
-            global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = sign * 1e3
+    target_device = 'numpy'
+    if device == 'auto':
+        if b.HAS_TORCH:
+            import torch
+            if torch.backends.mps.is_available():
+                target_device = torch.device('mps')
+            elif torch.cuda.is_available():
+                target_device = torch.device('cuda')
+            else:
+                target_device = torch.device('cpu')
+    elif device in ('numpy', None):
+        target_device = 'numpy'
+    else:
+        if not b.HAS_TORCH:
+            if verbose:
+                print(f"Warning: PyTorch not installed. Falling back to NumPy CPU for device={device}")
+            target_device = 'numpy'
         else:
-            nonempty += 1
-            sx, sy, sz = vol_block.shape
-            global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = vol_block
-    bar.done()
+            import torch
+            target_device = torch.device(device)
 
-    if verbose:
-        print('%d skipped, %d nonempty blocks evaluated' % (skipped, nonempty))
+    if target_device != 'numpy':
+        import torch
+        if verbose:
+            print(f"Evaluating {num_samples} volume samples on PyTorch device: {target_device}")
+
+        X_t = torch.as_tensor(X, dtype=torch.float32)
+        Y_t = torch.as_tensor(Y, dtype=torch.float32)
+        Z_t = torch.as_tensor(Z, dtype=torch.float32)
+
+        grid_x, grid_y, grid_z = torch.meshgrid(X_t, Y_t, Z_t, indexing='ij')
+        P_all = torch.stack([grid_x, grid_y, grid_z], dim=-1).reshape(-1, 3)
+
+        vol_flat = torch.empty(num_samples, dtype=torch.float32, device='cpu')
+
+        num_batches = (num_samples + gpu_batch_size - 1) // gpu_batch_size
+        bar = progress.Bar(num_batches, enabled=verbose)
+        for i in range(0, num_samples, gpu_batch_size):
+            batch_P = P_all[i : i + gpu_batch_size].to(target_device)
+            with torch.no_grad():
+                res = sdf(batch_P)
+            vol_flat[i : i + batch_P.shape[0]] = res.reshape(-1).cpu()
+            bar.increment(1)
+        bar.done()
+
+        global_vol = vol_flat.reshape(len(X), len(Y), len(Z)).numpy().astype(np.float64)
+
+    else:
+        s = batch_size
+        x_indices = list(range(0, len(X), s))
+        y_indices = list(range(0, len(Y), s))
+        z_indices = list(range(0, len(Z), s))
+        
+        batches = []
+        for ix in x_indices:
+            for iy in y_indices:
+                for iz in z_indices:
+                    job = (X[ix:ix+s], Y[iy:iy+s], Z[iz:iz+s])
+                    batches.append(((ix, iy, iz), job))
+                    
+        num_batches = len(batches)
+
+        if verbose:
+            print('%d samples in %d batches with %d workers' %
+                (num_samples, num_batches, workers))
+
+        global_vol = np.zeros((len(X), len(Y), len(Z)), dtype=np.float64)
+        skipped = empty = nonempty = 0
+        bar = progress.Bar(num_batches, enabled=verbose)
+        pool = ThreadPool(workers)
+        f = partial(_worker, sdf, step=(dx, dy, dz), sparse=sparse)
+        for (ix, iy, iz), vol_block, sign in pool.imap(f, batches):
+            bar.increment(1)
+            if vol_block is None:
+                skipped += 1
+                sx, sy, sz = min(s, len(X)-ix), min(s, len(Y)-iy), min(s, len(Z)-iz)
+                global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = sign * 1e3
+            else:
+                nonempty += 1
+                sx, sy, sz = vol_block.shape
+                global_vol[ix:ix+sx, iy:iy+sy, iz:iz+sz] = vol_block
+        bar.done()
+
+        if verbose:
+            print('%d skipped, %d nonempty blocks evaluated' % (skipped, nonempty))
         
     try:
         if method == 'marching_cubes':

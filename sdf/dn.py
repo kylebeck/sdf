@@ -1,19 +1,20 @@
 import itertools
 import numpy as np
+from . import backend as bk
 
-_min = np.minimum
-_max = np.maximum
+_min = bk.minimum
+_max = bk.maximum
 
 def union(a, *bs, k=None):
     def f(p):
         d1 = a(p)
-        for b in bs:
-            d2 = b(p)
-            K = k or getattr(b, '_k', None)
+        for b_elem in bs:
+            d2 = b_elem(p)
+            K = k or getattr(b_elem, '_k', None)
             if K is None:
                 d1 = _min(d1, d2)
             else:
-                h = np.clip(0.5 + 0.5 * (d2 - d1) / K, 0, 1)
+                h = bk.clip(0.5 + 0.5 * (d2 - d1) / K, 0, 1)
                 m = d2 + (d1 - d2) * h
                 d1 = m - K * h * (1 - h)
         return d1
@@ -22,13 +23,13 @@ def union(a, *bs, k=None):
 def difference(a, *bs, k=None):
     def f(p):
         d1 = a(p)
-        for b in bs:
-            d2 = b(p)
-            K = k or getattr(b, '_k', None)
+        for b_elem in bs:
+            d2 = b_elem(p)
+            K = k or getattr(b_elem, '_k', None)
             if K is None:
                 d1 = _max(d1, -d2)
             else:
-                h = np.clip(0.5 - 0.5 * (d2 + d1) / K, 0, 1)
+                h = bk.clip(0.5 - 0.5 * (d2 + d1) / K, 0, 1)
                 m = d1 + (-d2 - d1) * h
                 d1 = m + K * h * (1 - h)
         return d1
@@ -37,13 +38,13 @@ def difference(a, *bs, k=None):
 def intersection(a, *bs, k=None):
     def f(p):
         d1 = a(p)
-        for b in bs:
-            d2 = b(p)
-            K = k or getattr(b, '_k', None)
+        for b_elem in bs:
+            d2 = b_elem(p)
+            K = k or getattr(b_elem, '_k', None)
             if K is None:
                 d1 = _max(d1, d2)
             else:
-                h = np.clip(0.5 - 0.5 * (d2 - d1) / K, 0, 1)
+                h = bk.clip(0.5 - 0.5 * (d2 - d1) / K, 0, 1)
                 m = d2 + (d1 - d2) * h
                 d1 = m + K * h * (1 - h)
         return d1
@@ -52,9 +53,9 @@ def intersection(a, *bs, k=None):
 def blend(a, *bs, k=0.5):
     def f(p):
         d1 = a(p)
-        for b in bs:
-            d2 = b(p)
-            K = k or getattr(b, '_k', None)
+        for b_elem in bs:
+            d2 = b_elem(p)
+            K = k or getattr(b_elem, '_k', None)
             d1 = K * d2 + (1 - K) * d1
         return d1
     return f
@@ -76,7 +77,7 @@ def erode(other, r):
 
 def shell(other, thickness):
     def f(p):
-        return np.abs(other(p)) - thickness / 2
+        return bk.abs(other(p)) - thickness / 2
     return f
 
 def repeat(other, spacing, count=None, padding=0):
@@ -99,16 +100,18 @@ def repeat(other, spacing, count=None, padding=0):
         return list(itertools.product(*axes))
 
     def f(p):
-        q = np.divide(p, spacing, out=np.zeros_like(p), where=spacing != 0)
+        sp = bk.as_tensor(spacing, p)
+        q = bk.where(sp != 0, p / sp, bk.as_tensor(0.0, p))
         if count is None:
-            index = np.round(q)
+            index = bk.round(q)
         else:
-            index = np.clip(np.round(q), -count, count)
+            cnt = bk.as_tensor(count, p)
+            index = bk.clip(bk.round(q), -cnt, cnt)
 
-        indexes = [index + n for n in neighbors(p.shape[-1], padding, spacing)]
-        A = [other(p - spacing * i) for i in indexes]
+        indexes = [index + bk.as_tensor(n, p) for n in neighbors(p.shape[-1], padding, spacing)]
+        A = [other(p - sp * i) for i in indexes]
         a = A[0]
-        for b in A[1:]:
-            a = _min(a, b)
+        for b_item in A[1:]:
+            a = _min(a, b_item)
         return a
     return f

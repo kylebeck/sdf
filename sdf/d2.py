@@ -1,8 +1,8 @@
 import functools
+import math
 import numpy as np
-import operator
 
-from . import dn, d3, ease
+from . import dn, d3, ease, backend as bk
 
 # Constants
 
@@ -21,7 +21,10 @@ class SDF2:
     def __init__(self, f):
         self.f = f
     def __call__(self, p):
-        return self.f(p).reshape((-1, 1))
+        res = self.f(p)
+        if bk.is_tensor(res):
+            return res.reshape(-1, 1)
+        return res.reshape((-1, 1))
     def __getattr__(self, name):
         if name in _ops:
             f = _ops[name]
@@ -57,33 +60,33 @@ def op23(f):
 # Helpers
 
 def _length(a):
-    return np.linalg.norm(a, axis=1)
+    return bk.norm(a, axis=-1)
 
 def _normalize(a):
-    return a / np.linalg.norm(a)
+    return bk.normalize(a)
 
 def _dot(a, b):
-    return np.sum(a * b, axis=1)
+    return bk.dot(a, b)
 
 def _vec(*arrs):
-    return np.stack(arrs, axis=-1)
+    return bk.vec(*arrs)
 
-_min = np.minimum
-_max = np.maximum
+_min = bk.minimum
+_max = bk.maximum
 
 # Primitives
 
 @sdf2
 def circle(radius=1, center=ORIGIN):
     def f(p):
-        return _length(p - center) - radius
+        return _length(p - bk.as_tensor(center, p)) - radius
     return f
 
 @sdf2
 def line(normal=UP, point=ORIGIN):
     normal = _normalize(normal)
     def f(p):
-        return np.dot(point - p, normal)
+        return _dot(bk.as_tensor(point, p) - p, normal)
     return f
 
 @sdf2
@@ -100,17 +103,17 @@ def slab(x0=None, y0=None, x1=None, y1=None, k=None):
     return intersection(*fs, k=k)
 
 @sdf2
-def rectangle(size=1, center=ORIGIN, a=None, b=None):
-    if a is not None and b is not None:
+def rectangle(size=1, center=ORIGIN, a=None, b_pt=None):
+    if a is not None and b_pt is not None:
         a = np.array(a)
-        b = np.array(b)
-        size = b - a
+        b_pt = np.array(b_pt)
+        size = b_pt - a
         center = a + size / 2
         return rectangle(size, center)
     size = np.array(size)
     def f(p):
-        q = np.abs(p - center) - size / 2
-        return _length(_max(q, 0)) + _min(np.amax(q, axis=1), 0)
+        q = bk.abs(p - bk.as_tensor(center, p)) - bk.as_tensor(size / 2, p)
+        return _length(_max(q, 0)) + _min(bk.amax(q, axis=-1), 0)
     return f
 
 @sdf2
@@ -120,90 +123,33 @@ def rounded_rectangle(size, radius, center=ORIGIN):
     except TypeError:
         r0 = r1 = r2 = r3 = radius
     def f(p):
-        x = p[:,0]
-        y = p[:,1]
-        r = np.zeros(len(p)).reshape((-1, 1))
-        r[np.logical_and(x > 0, y > 0)] = r0
-        r[np.logical_and(x > 0, y <= 0)] = r1
-        r[np.logical_and(x <= 0, y <= 0)] = r2
-        r[np.logical_and(x <= 0, y > 0)] = r3
-        q = np.abs(p) - size / 2 + r
+        x = p[..., 0]
+        y = p[..., 1]
+        if bk.is_tensor(p):
+            import torch
+            r = torch.zeros(p.shape[0], device=p.device, dtype=p.dtype).unsqueeze(-1)
+            c0 = (x > 0) & (y > 0)
+            c1 = (x > 0) & (y <= 0)
+            c2 = (x <= 0) & (y <= 0)
+            c3 = (x <= 0) & (y > 0)
+            r[c0] = r0
+            r[c1] = r1
+            r[c2] = r2
+            r[c3] = r3
+        else:
+            r = np.zeros(len(p)).reshape((-1, 1))
+            r[np.logical_and(x > 0, y > 0)] = r0
+            r[np.logical_and(x > 0, y <= 0)] = r1
+            r[np.logical_and(x <= 0, y <= 0)] = r2
+            r[np.logical_and(x <= 0, y > 0)] = r3
+        q = bk.abs(p) - bk.as_tensor(size / 2, p) + r
+        if bk.is_tensor(p):
+            return (
+                _min(_max(q[..., 0], q[..., 1]), 0).unsqueeze(-1) +
+                _length(_max(q, 0)).unsqueeze(-1) - r)
         return (
             _min(_max(q[:,0], q[:,1]), 0).reshape((-1, 1)) +
             _length(_max(q, 0)).reshape((-1, 1)) - r)
-    return f
-
-@sdf2
-def equilateral_triangle():
-    def f(p):
-        k = 3 ** 0.5
-        p = _vec(
-            np.abs(p[:,0]) - 1,
-            p[:,1] + 1 / k)
-        w = p[:,0] + k * p[:,1] > 0
-        q = _vec(
-            p[:,0] - k * p[:,1],
-            -k * p[:,0] - p[:,1]) / 2
-        p = np.where(w.reshape((-1, 1)), q, p)
-        p = _vec(
-            p[:,0] - np.clip(p[:,0], -2, 0),
-            p[:,1])
-        return -_length(p) * np.sign(p[:,1])
-    return f
-
-@sdf2
-def hexagon(r):
-    r *= 3 ** 0.5 / 2
-    def f(p):
-        k = np.array((3 ** 0.5 / -2, 0.5, np.tan(np.pi / 6)))
-        p = np.abs(p)
-        p -= 2 * k[:2] * _min(_dot(k[:2], p), 0).reshape((-1, 1))
-        p -= _vec(
-            np.clip(p[:,0], -k[2] * r, k[2] * r),
-            np.zeros(len(p)) + r)
-        return _length(p) * np.sign(p[:,1])
-    return f
-
-@sdf2
-def rounded_x(w, r):
-    def f(p):
-        p = np.abs(p)
-        q = (_min(p[:,0] + p[:,1], w) * 0.5).reshape((-1, 1))
-        return _length(p - q) - r
-    return f
-
-@sdf2
-def polygon(points):
-    points = [np.array(p) for p in points]
-    def f(p):
-        n = len(points)
-        d = _dot(p - points[0], p - points[0])
-        s = np.ones(len(p))
-        for i in range(n):
-            j = (i + n - 1) % n
-            vi = points[i]
-            vj = points[j]
-            e = vj - vi
-            w = p - vi
-            b = w - e * np.clip(np.dot(w, e) / np.dot(e, e), 0, 1).reshape((-1, 1))
-            d = _min(d, _dot(b, b))
-            c1 = p[:,1] >= vi[1]
-            c2 = p[:,1] < vj[1]
-            c3 = e[0] * w[:,1] > e[1] * w[:,0]
-            c = _vec(c1, c2, c3)
-            s = np.where(np.all(c, axis=1) | np.all(~c, axis=1), -s, s)
-        return s * np.sqrt(d)
-    return f
-
-@sdf2
-def vesica(r, d):
-    def f(p):
-        p = np.abs(p)
-        b = np.sqrt(r * r - d * d)
-        return np.where(
-            ((p[:,1] - b) * d > p[:,0] * b),
-            _length(p - np.array([0, b])),
-            _length(p - np.array([-d, 0])) - r)
     return f
 
 # Positioning
@@ -211,7 +157,7 @@ def vesica(r, d):
 @op2
 def translate(other, offset):
     def f(p):
-        return other(p - offset)
+        return other(p - bk.as_tensor(offset, p))
     return f
 
 @op2
@@ -223,25 +169,24 @@ def scale(other, factor):
     s = (x, y)
     m = min(x, y)
     def f(p):
-        return other(p / s) * m
+        return other(p / bk.as_tensor(s, p)) * m
     return f
 
 @op2
 def rotate(other, angle):
-    s = np.sin(angle)
-    c = np.cos(angle)
-    m = 1 - c
+    s = math.sin(angle)
+    c = math.cos(angle)
     matrix = np.array([
         [c, -s],
         [s, c],
     ]).T
     def f(p):
-        return other(np.dot(p, matrix))
+        return other(bk.matmul(p, matrix))
     return f
 
 @op2
 def circular_array(other, count):
-    angles = [i / count * 2 * np.pi for i in range(count)]
+    angles = [i / count * 2 * math.pi for i in range(count)]
     return union(*[other.rotate(a) for a in angles])
 
 # Alterations
@@ -249,9 +194,15 @@ def circular_array(other, count):
 @op2
 def elongate(other, size):
     def f(p):
-        q = np.abs(p) - size
-        x = q[:,0].reshape((-1, 1))
-        y = q[:,1].reshape((-1, 1))
+        q = bk.abs(p) - bk.as_tensor(size, p)
+        x = q[..., 0]
+        y = q[..., 1]
+        if bk.is_tensor(x):
+            x = x.unsqueeze(-1)
+            y = y.unsqueeze(-1)
+        else:
+            x = x.reshape((-1, 1))
+            y = y.reshape((-1, 1))
         w = _min(_max(x, y), 0)
         return other(_max(q, 0)) + w
     return f
@@ -261,27 +212,16 @@ def elongate(other, size):
 @op23
 def extrude(other, h):
     def f(p):
-        d = other(p[:,[0,1]])
-        w = _vec(d.reshape(-1), np.abs(p[:,2]) - h / 2)
-        return _min(_max(w[:,0], w[:,1]), 0) + _length(_max(w, 0))
-    return f
-
-@op23
-def extrude_to(a, b, h, e=ease.linear):
-    def f(p):
-        d1 = a(p[:,[0,1]])
-        d2 = b(p[:,[0,1]])
-        t = e(np.clip(p[:,2] / h, -0.5, 0.5) + 0.5)
-        d = d1 + (d2 - d1) * t.reshape((-1, 1))
-        w = _vec(d.reshape(-1), np.abs(p[:,2]) - h / 2)
-        return _min(_max(w[:,0], w[:,1]), 0) + _length(_max(w, 0))
+        d_val = other(p[..., [0, 1]])
+        w = _vec(d_val.reshape(-1), bk.abs(p[..., 2]) - h / 2)
+        return _min(_max(w[..., 0], w[..., 1]), 0) + _length(_max(w, 0))
     return f
 
 @op23
 def revolve(other, offset=0):
     def f(p):
-        xy = p[:,[0,1]]
-        q = _vec(_length(xy) - offset, p[:,2])
+        xy = p[..., [0, 1]]
+        q = _vec(_length(xy) - offset, p[..., 2])
         return other(q)
     return f
 
