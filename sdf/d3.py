@@ -498,6 +498,135 @@ def bend(other, k):
         return other(_vec(x2, y2, z2))
     return f
 
+@op3
+def bend_linear(other, p0, p1, v, e=ease.linear):
+    p0_arr = np.array(p0)
+    p1_arr = np.array(p1)
+    v_arr = -np.array(v)
+    ab_arr = p1_arr - p0_arr
+    ab_sq = np.dot(ab_arr, ab_arr)
+    def f(p):
+        p0_t = bk.as_tensor(p0_arr, p)
+        ab_t = bk.as_tensor(ab_arr, p)
+        v_t = bk.as_tensor(v_arr, p)
+        t = bk.clip(_dot(p - p0_t, ab_t) / ab_sq, 0, 1)
+        t_e = e(t)
+        if bk.is_symbolic(t_e):
+            pass
+        elif bk.is_tensor(t_e):
+            t_e = t_e.reshape((-1, 1))
+        else:
+            t_e = np.reshape(t_e, (-1, 1))
+        return other(p + t_e * v_t)
+    return f
+
+@op3
+def bend_radial(other, r0, r1, dz, e=ease.linear):
+    def f(p):
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        r = bk.hypot(x, y)
+        t = bk.clip((r - r0) / (r1 - r0), 0, 1)
+        z2 = z - dz * e(t)
+        return other(_vec(x, y, z2))
+    return f
+
+@op3
+def transition_linear(f0, f1, p0=-Z, p1=Z, e=ease.linear):
+    p0_arr = np.array(p0)
+    p1_arr = np.array(p1)
+    ab_arr = p1_arr - p0_arr
+    ab_sq = np.dot(ab_arr, ab_arr)
+    def f(p):
+        d1 = f0(p)
+        d2 = f1(p)
+        p0_t = bk.as_tensor(p0_arr, p)
+        ab_t = bk.as_tensor(ab_arr, p)
+        t = bk.clip(_dot(p - p0_t, ab_t) / ab_sq, 0, 1)
+        t_e = e(t)
+        if bk.is_symbolic(t_e):
+            pass
+        elif bk.is_tensor(t_e):
+            t_e = t_e.reshape((-1, 1))
+        else:
+            t_e = np.reshape(t_e, (-1, 1))
+        return t_e * d2 + (1 - t_e) * d1
+    return f
+
+@op3
+def transition_radial(f0, f1, r0=0, r1=1, e=ease.linear):
+    def f(p):
+        d1 = f0(p)
+        d2 = f1(p)
+        x = p[..., 0]
+        y = p[..., 1]
+        r = bk.hypot(x, y)
+        t = bk.clip((r - r0) / (r1 - r0), 0, 1)
+        t_e = e(t)
+        if bk.is_symbolic(t_e):
+            pass
+        elif bk.is_tensor(t_e):
+            t_e = t_e.reshape((-1, 1))
+        else:
+            t_e = np.reshape(t_e, (-1, 1))
+        return t_e * d2 + (1 - t_e) * d1
+    return f
+
+@op3
+def wrap_around(other, x0, x1, r=None, e=ease.linear):
+    p0 = X * x0
+    p1 = X * x1
+    v = -Y
+    if r is None:
+        r = np.linalg.norm(p1 - p0) / (2 * math.pi)
+    def f(p):
+        x = p[..., 0]
+        y = p[..., 1]
+        z = p[..., 2]
+        d = bk.hypot(x, y) - r
+        a = bk.arctan2(y, x)
+        t = (a + math.pi) / (2 * math.pi)
+        t_e = e(t)
+        if bk.is_symbolic(t_e):
+            pass
+        elif bk.is_tensor(t_e):
+            t_e = t_e.reshape((-1, 1))
+            d = d.reshape((-1, 1))
+        else:
+            t_e = np.reshape(t_e, (-1, 1))
+            d = np.reshape(d, (-1, 1))
+        p0_t = bk.as_tensor(p0, p)
+        p1_t = bk.as_tensor(p1, p)
+        v_t = bk.as_tensor(v, p)
+        q = p0_t + (p1_t - p0_t) * t_e + v_t * d
+        qx = q[..., 0]
+        qy = q[..., 1]
+        return other(_vec(qx, qy, z))
+    return f
+
+# 3D => 2D Operations
+
+@op32
+def slice(other):
+    # TODO: support specifying a slice plane
+    # TODO: probably a better way to do this
+    s = slab(z0=-1e-9, z1=1e-9)
+    a = other & s
+    b = other.negate() & s
+    def f(p):
+        x = p[..., 0]
+        y = p[..., 1]
+        p3 = _vec(x, y, 0 * x)
+        if bk.is_tensor(p3):
+            A = a(p3).reshape(-1)
+            B = -b(p3).reshape(-1)
+        else:
+            A = np.reshape(a(p3), -1)
+            B = np.reshape(-b(p3), -1)
+        return bk.where(A <= 0, B, A)
+    return f
+
 # Common
 
 union = op3(dn.union)
