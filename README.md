@@ -683,6 +683,23 @@ f = intersection(a, b, k=0.25) # equivalent
 
 <br clear="right">
 
+### Smoothing Guidance (`k`)
+
+Smoothing in `sdf` is powered by polynomial smooth minimum (`smin`). The smoothing parameter `k` controls the blend transition radius between surfaces.
+
+#### Key Considerations & Rules of Thumb
+
+- **Blend Distance (Active Zone):** Smoothing occurs only in regions where component surfaces are within distance $k$ of each other ($|d_1 - d_2| < k$). Outside this zone, primitives retain their sharp geometry.
+- **Seam Fillet Expansion ($\frac{k}{4}$):** At the intersection joint ($d_1 = d_2$), `smooth_union` expands outward by up to $\frac{k}{4}$. Set $k \approx 4 \times r_{\text{fillet}}$ for a desired fillet radius.
+- **Scale $k$ Relative to Feature Size:** Keep $k$ small relative to component dimensions (typically $10\%$ to $50\%$ of feature size). Setting $k$ larger than component dimensions will swallow fine features and turn the shape into a large, featureless blob.
+- **Attach `.k()` to the Right-Hand Operand:** When using binary operators (`|`, `-`, `&`), `_k` is evaluated on the right operand:
+  - `a | b.k(0.25)` $\rightarrow$ **Correct** (applies smooth union with $k=0.25$).
+  - `a.k(0.25) | b` $\rightarrow$ **Incorrect** (`_k` attached to `a` is ignored).
+- **Avoid Post-Chaining `.k()`:** `(a | b).k(0.25)` sets `_k` on the *result* of the union after `union(a, b)` has already evaluated. It will not smooth `a` and `b`.
+- **Use Functional Syntax for Clarity:** `union(a, b, k=0.25)` or `difference(a, b, k=0.25)` applies $k$ directly and avoids operand-ordering ambiguity.
+- **Smooth Operations vs. `blend()`:** `union(a, b, k=...)` creates local fillets/smooth transitions at joints. In contrast, `blend(a, b, k=...)` linearly interpolates distance fields globally across the entire space.
+- **Bounding Box Considerations:** Large $k$ values expand the shape surface outward by $\frac{k}{4}$. If the expanded mesh gets sliced off when saving, specify explicit bounds in `.save('out.stl', bounds=...)`.
+
 ## Repetition
 
 ### repeat
