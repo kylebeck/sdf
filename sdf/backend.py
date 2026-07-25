@@ -27,11 +27,13 @@ def as_tensor(x, ref=None):
         return np.asarray(x)
     if is_tensor(x):
         if ref is not None and is_tensor(ref):
-            return x.to(device=ref.device, dtype=ref.dtype)
+            dtype = ref.dtype if (ref.dtype != torch.bool or x.dtype == torch.bool) else x.dtype
+            return x.to(device=ref.device, dtype=dtype)
         return x
     if ref is not None:
         if is_tensor(ref):
-            return torch.tensor(x, device=ref.device, dtype=ref.dtype)
+            dtype = ref.dtype if (ref.dtype != torch.bool or isinstance(x, bool)) else torch.float32
+            return torch.tensor(x, device=ref.device, dtype=dtype)
         return np.asarray(x)
     return np.asarray(x)
 
@@ -206,7 +208,12 @@ def where(condition, x, y):
     x_t = is_tensor(x)
     y_t = is_tensor(y)
     if cond_t or x_t or y_t:
-        ref = x if x_t else (y if y_t else condition)
+        ref = x if x_t else (y if y_t else None)
+        if ref is None:
+            cond_tensor = as_tensor(condition).bool()
+            x_tensor = torch.tensor(x, device=cond_tensor.device, dtype=torch.float32)
+            y_tensor = torch.tensor(y, device=cond_tensor.device, dtype=torch.float32)
+            return torch.where(cond_tensor, x_tensor, y_tensor)
         cond_tensor = as_tensor(condition, ref).bool()
         x_tensor = as_tensor(x, ref)
         y_tensor = as_tensor(y, ref)
