@@ -861,6 +861,19 @@ f = text(FONT, TEXT).extrude(0.1).orient(Y).wrap_around(-w / 2, w / 2)
 
 ## 2D to 3D Operations
 
+> [!NOTE]
+> When using `from sdf import *`, 3D boolean function names (`union`, `difference`, `intersection`) override 2D ones in the global namespace.
+> To combine 2D shapes before extruding, use operator syntax (`|`, `&`, `-`) or explicitly call `d2.union(...)`:
+> ```python
+> # Preferred operator syntax:
+> tubercle_boundary = circle(1).translate((0, 3)) | equilateral_triangle(3)
+> f = tubercle_boundary.extrude(5)
+>
+> # Or using explicit d2 module:
+> tubercle_boundary = d2.union(circle(1), equilateral_triangle(3))
+> f = tubercle_boundary.extrude(5)
+> ```
+
 ### extrude
 
 <img width=128 align="right" src="docs/images/extrude.png">

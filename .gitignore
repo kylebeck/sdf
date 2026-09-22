@@ -5,3 +5,5 @@ __pycache__/
 sdf/__pycache__/
 sdf/*.c
 sdf/*.so
+experiments/
+.DS_Store
