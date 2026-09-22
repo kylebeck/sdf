@@ -80,9 +80,10 @@ def shell(other, thickness):
         return bk.abs(other(p)) - thickness / 2
     return f
 
-def repeat(other, spacing, count=None, padding=0):
+def repeat(other, spacing, count=None, padding=0, k=None):
     count = np.array(count) if count is not None else None
     spacing = np.array(spacing)
+    K = k if k is not None else getattr(other, '_k', None)
 
     def neighbors(dim, padding, spacing):
         try:
@@ -112,6 +113,60 @@ def repeat(other, spacing, count=None, padding=0):
         A = [other(p - sp * i) for i in indexes]
         a = A[0]
         for b_item in A[1:]:
-            a = _min(a, b_item)
+            if K is not None and K > 0:
+                h = bk.clip(0.5 + 0.5 * (b_item - a) / K, 0, 1)
+                m = b_item + (a - b_item) * h
+                a = m - K * h * (1 - h)
+            else:
+                a = _min(a, b_item)
         return a
     return f
+
+class SpatialHashGrid:
+    def __init__(self, cell_size):
+        self.cell_size = float(cell_size)
+        self.grid = {}
+        self.points = []
+        self.radii = []
+
+    def _cell_coords(self, point):
+        return tuple(np.floor(np.asarray(point) / self.cell_size).astype(int))
+
+    def insert(self, point, radius, idx):
+        cell = self._cell_coords(point)
+        if cell not in self.grid:
+            self.grid[cell] = []
+        self.grid[cell].append(idx)
+        self.points.append(point)
+        self.radii.append(radius)
+
+    def is_valid(self, candidate, candidate_radius, max_search_radius):
+        cand = np.asarray(candidate)
+        cell = self._cell_coords(cand)
+        search_radius = candidate_radius + max_search_radius
+        search_range = max(1, int(np.ceil(search_radius / self.cell_size)))
+        dim = len(cand)
+        ranges = [range(cell[i] - search_range, cell[i] + search_range + 1) for i in range(dim)]
+        for neighbor_cell in itertools.product(*ranges):
+            if neighbor_cell in self.grid:
+                for idx in self.grid[neighbor_cell]:
+                    pt = self.points[idx]
+                    r = self.radii[idx]
+                    dist_sq = np.sum((cand - pt) ** 2)
+                    req_dist = candidate_radius + r
+                    if dist_sq < req_dist * req_dist:
+                        return False
+        return True
+
+    def query_range(self, min_pt, max_pt):
+        dim = len(min_pt)
+        min_cell = np.floor(np.asarray(min_pt) / self.cell_size).astype(int)
+        max_cell = np.floor(np.asarray(max_pt) / self.cell_size).astype(int)
+        ranges = [range(min_cell[i], max_cell[i] + 1) for i in range(dim)]
+        indices = []
+        for cell in itertools.product(*ranges):
+            if cell in self.grid:
+                indices.extend(self.grid[cell])
+        return indices
+
+

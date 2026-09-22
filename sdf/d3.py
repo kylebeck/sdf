@@ -435,7 +435,8 @@ def orient(other, axis):
     return rotate_to(other, UP, axis)
 
 @op3
-def circular_array(other, count, offset=0):
+def circular_array(other, count, offset=0, k=None):
+    K = k if k is not None else getattr(other, '_k', None)
     other = other.translate(X * offset)
     da = 2 * math.pi / count
     def f(p):
@@ -446,6 +447,10 @@ def circular_array(other, count, offset=0):
         a_val = bk.arctan2(y, x) % da
         d1 = other(_vec(bk.cos(a_val - da) * d, bk.sin(a_val - da) * d, z))
         d2 = other(_vec(bk.cos(a_val) * d, bk.sin(a_val) * d, z))
+        if K is not None and K > 0:
+            h = bk.clip(0.5 + 0.5 * (d2 - d1) / K, 0, 1)
+            m = d2 + (d1 - d2) * h
+            return m - K * h * (1 - h)
         return _min(d1, d2)
     return f
 
@@ -638,3 +643,377 @@ dilate = op3(dn.dilate)
 erode = op3(dn.erode)
 shell = op3(dn.shell)
 repeat = op3(dn.repeat)
+
+def _random_rotation_matrix_3d(rng):
+    u1, u2, u3 = rng.uniform(0, 1, 3)
+    q0 = math.sqrt(1 - u1) * math.sin(2 * math.pi * u2)
+    q1 = math.sqrt(1 - u1) * math.cos(2 * math.pi * u2)
+    q2 = math.sqrt(u1) * math.sin(2 * math.pi * u3)
+    q3 = math.sqrt(u1) * math.cos(2 * math.pi * u3)
+    
+    R = np.array([
+        [1 - 2*(q2**2 + q3**2), 2*(q1*q2 - q0*q3), 2*(q1*q3 + q0*q2)],
+        [2*(q1*q2 + q0*q3), 1 - 2*(q1**2 + q3**2), 2*(q2*q3 - q0*q1)],
+        [2*(q1*q3 - q0*q2), 2*(q2*q3 + q0*q1), 1 - 2*(q1**2 + q2**2)]
+    ])
+    return R
+
+def _poisson_disc_3d(domain, r_min, r_max=None, k_samples=30, variable_radius=None,
+                     containment_mode='strict', seed=None, bounds=None):
+    if domain is None:
+        raise ValueError("domain (an SDF2 or SDF3 object) must be provided to specify the Poisson field boundary.")
+    if containment_mode not in ('strict', 'center'):
+        raise ValueError(f"Invalid containment_mode '{containment_mode}'. Expected 'strict' or 'center'.")
+
+    rng = np.random.default_rng(seed)
+
+    is_domain_2d = isinstance(domain, d2.SDF2)
+    if not is_domain_2d and not isinstance(domain, SDF3):
+        try:
+            domain(np.zeros((1, 2)))
+            is_domain_2d = True
+        except Exception:
+            is_domain_2d = False
+
+    if bounds is None:
+        if is_domain_2d:
+            b2d = core._estimate_bounds(domain, dim=2)
+            bounds = ((b2d[0][0], b2d[0][1], -0.1), (b2d[1][0], b2d[1][1], 0.1))
+        else:
+            bounds = core._estimate_bounds(domain, dim=3)
+    (x0, y0, z0), (x1, y1, z1) = bounds
+
+    if r_max is None:
+        r_max = r_min
+
+    def get_radius(p):
+        if variable_radius is not None:
+            try:
+                val = float(variable_radius(p, domain))
+            except TypeError:
+                val = float(variable_radius(p))
+            if r_max is not None and r_max > r_min:
+                return float(np.clip(val, r_min, r_max))
+            return max(r_min, val)
+        return r_min
+
+    def is_contained(p, r):
+        p_arr = np.asarray(p, dtype=float)
+        if is_domain_2d:
+            val = float(domain(p_arr[:2].reshape(1, 2))[0, 0])
+        else:
+            val = float(domain(p_arr.reshape(1, 3))[0, 0])
+        if containment_mode == 'strict':
+            return val + r <= 1e-6
+        return val <= 1e-6
+
+    cell_size = r_min / math.sqrt(3)
+    grid = dn.SpatialHashGrid(cell_size)
+
+    samples = []
+    radii = []
+
+    initial_pt = None
+    initial_r = None
+    for _ in range(10000):
+        rx = rng.uniform(x0, x1)
+        ry = rng.uniform(y0, y1)
+        rz = rng.uniform(z0, z1)
+        pt = np.array([rx, ry, rz])
+        r = get_radius(pt)
+        if is_contained(pt, r):
+            initial_pt = pt
+            initial_r = r
+            break
+
+    if initial_pt is None:
+        return np.empty((0, 3)), np.empty((0,))
+
+    grid.insert(initial_pt, initial_r, 0)
+    samples.append(initial_pt)
+    radii.append(initial_r)
+
+    active = [0]
+
+    passes = [r_max]
+    if r_max > r_min:
+        cur_r = r_max
+        while cur_r > r_min + 1e-6:
+            next_r = max(r_min, cur_r * 0.75)
+            if abs(next_r - cur_r) < 1e-6:
+                break
+            cur_r = next_r
+            passes.append(cur_r)
+
+    for pass_r in passes:
+        reseed_tries = 0
+        while reseed_tries < 500:
+            if not active and pass_r < r_max:
+                rx = rng.uniform(x0, x1)
+                ry = rng.uniform(y0, y1)
+                rz = rng.uniform(z0, z1)
+                pt = np.array([rx, ry, rz])
+                r = min(pass_r, get_radius(pt))
+                if is_contained(pt, r) and grid.is_valid(pt, r, r_max):
+                    idx = len(samples)
+                    grid.insert(pt, r, idx)
+                    samples.append(pt)
+                    radii.append(r)
+                    active.append(idx)
+                    reseed_tries = 0
+                else:
+                    reseed_tries += 1
+
+            while active:
+                idx_in_active = rng.integers(0, len(active))
+                parent_idx = active[idx_in_active]
+                parent_pt = samples[parent_idx]
+                parent_r = radii[parent_idx]
+
+                found = False
+                for _ in range(k_samples):
+                    u = rng.uniform(-1, 1)
+                    phi = rng.uniform(0, 2 * math.pi)
+                    sin_theta = math.sqrt(max(0.0, 1.0 - u * u))
+                    dir_3d = np.array([sin_theta * math.cos(phi), sin_theta * math.sin(phi), u])
+
+                    r_cand_est = min(pass_r, get_radius(parent_pt)) if r_max > r_min else get_radius(parent_pt)
+                    min_dist = parent_r + r_cand_est
+                    dist = rng.uniform(min_dist, 2 * min_dist)
+                    cand = parent_pt + dir_3d * dist
+
+                    if cand[0] < x0 or cand[0] > x1 or cand[1] < y0 or cand[1] > y1 or cand[2] < z0 or cand[2] > z1:
+                        continue
+
+                    cand_r = min(pass_r, get_radius(cand)) if r_max > r_min else get_radius(cand)
+
+                    if is_contained(cand, cand_r) and grid.is_valid(cand, cand_r, r_max):
+                        new_idx = len(samples)
+                        grid.insert(cand, cand_r, new_idx)
+                        samples.append(cand)
+                        radii.append(cand_r)
+                        active.append(new_idx)
+                        found = True
+                        break
+
+                if not found:
+                    active.pop(idx_in_active)
+
+            if pass_r == r_max:
+                break
+
+    if not samples:
+        return np.empty((0, 3)), np.empty((0,))
+
+    return np.array(samples), np.array(radii)
+
+def _smooth_reduce_torch(d_matrix, K):
+    import torch
+    if K is None or K <= 0 or d_matrix.shape[1] <= 1:
+        return d_matrix.min(dim=1, keepdim=True).values
+    d_sorted, _ = torch.sort(d_matrix, dim=1)
+    d_acc = d_sorted[:, 0:1]
+    M = d_matrix.shape[1]
+    for col in range(1, M):
+        d_next = d_sorted[:, col:col+1]
+        diff = d_next - d_acc
+        if (diff >= K).all():
+            break
+        h = torch.clamp(0.5 + 0.5 * diff / K, 0.0, 1.0)
+        m = d_next + (d_acc - d_next) * h
+        d_acc = m - K * h * (1.0 - h)
+    return d_acc
+
+def _smooth_reduce_numpy(d_matrix, K):
+    if K is None or K <= 0 or d_matrix.shape[1] <= 1:
+        return d_matrix.min(axis=1, keepdims=True)
+    d_sorted = np.sort(d_matrix, axis=1)
+    d_acc = d_sorted[:, 0:1]
+    M = d_matrix.shape[1]
+    for col in range(1, M):
+        d_next = d_sorted[:, col:col+1]
+        diff = d_next - d_acc
+        if np.all(diff >= K):
+            break
+        h = np.clip(0.5 + 0.5 * diff / K, 0.0, 1.0)
+        m = d_next + (d_acc - d_next) * h
+        d_acc = m - K * h * (1.0 - h)
+    return d_acc
+
+@op3
+def poisson_array(
+    other,
+    r_min,
+    r_max=None,
+    domain=None,
+    bounds=None,
+    k_samples=30,
+    variable_radius=None,
+    scale_to_radius=False,
+    base_radius=None,
+    containment_mode='strict',
+    seed=None,
+    random_rotation=False,
+    k=None
+):
+    if domain is None:
+        raise ValueError("domain (an SDF2 or SDF3 object) must be provided to specify the Poisson field boundary.")
+    if containment_mode not in ('strict', 'center'):
+        raise ValueError(f"Invalid containment_mode '{containment_mode}'. Expected 'strict' or 'center'.")
+
+    is_domain_2d = isinstance(domain, d2.SDF2)
+    if not is_domain_2d and not isinstance(domain, SDF3):
+        try:
+            domain(np.zeros((1, 2)))
+            is_domain_2d = True
+        except Exception:
+            is_domain_2d = False
+
+    if is_domain_2d:
+        centers_2d, radii = d2._poisson_disc_2d(
+            domain=domain,
+            r_min=r_min,
+            r_max=r_max,
+            k_samples=k_samples,
+            variable_radius=variable_radius,
+            containment_mode=containment_mode,
+            seed=seed,
+            bounds=bounds
+        )
+        if len(centers_2d) > 0:
+            centers = np.column_stack([centers_2d, np.zeros(len(centers_2d))])
+        else:
+            centers = np.empty((0, 3))
+    else:
+        centers, radii = _poisson_disc_3d(
+            domain=domain,
+            r_min=r_min,
+            r_max=r_max,
+            k_samples=k_samples,
+            variable_radius=variable_radius,
+            containment_mode=containment_mode,
+            seed=seed,
+            bounds=bounds
+        )
+
+    base_r = base_radius if base_radius is not None else 1.0
+    if len(radii) > 0 and scale_to_radius:
+        scales = radii / base_r
+    else:
+        scales = np.ones(len(radii), dtype=np.float32)
+
+    rng = np.random.default_rng(seed)
+    if random_rotation and len(centers) > 0:
+        matrices = [_random_rotation_matrix_3d(rng) for _ in range(len(centers))]
+    else:
+        matrices = [np.eye(3) for _ in range(len(centers))]
+
+    matrices = np.array(matrices, dtype=np.float32) if len(centers) > 0 else np.empty((0, 3, 3), dtype=np.float32)
+    centers = np.array(centers, dtype=np.float32) if len(centers) > 0 else np.empty((0, 3), dtype=np.float32)
+    scales = np.array(scales, dtype=np.float32) if len(centers) > 0 else np.empty((0,), dtype=np.float32)
+
+    r_bound = scales * base_r
+    K = k if k is not None else getattr(other, '_k', None)
+
+    def f(p):
+        if len(centers) == 0:
+            if bk.is_tensor(p):
+                import torch
+                return torch.full(p.shape[:-1] + (1,), 1e9, device=p.device, dtype=p.dtype)
+            return np.full(p.shape[:-1] + (1,), 1e9)
+
+        p_3d = p.reshape(-1, 3)
+        N = p_3d.shape[0]
+        is_t = bk.is_tensor(p)
+
+        if is_t:
+            import torch
+            p_min = p_3d.min(dim=0).values
+            p_max = p_3d.max(dim=0).values
+            p_center = (p_min + p_max) * 0.5
+            p_half_diag = torch.linalg.norm((p_max - p_min) * 0.5)
+
+            centers_t = bk.as_tensor(centers, p)
+            scales_t = bk.as_tensor(scales, p)
+            matrices_t = bk.as_tensor(matrices, p)
+            r_bound_t = bk.as_tensor(r_bound, p)
+
+            c_dists = torch.linalg.norm(centers_t - p_center, dim=1)
+            active = c_dists <= (p_half_diag + r_bound_t + 0.1)
+            active_indices = torch.where(active)[0]
+
+            if len(active_indices) == 0:
+                active_indices = torch.argmin(c_dists).unsqueeze(0)
+
+            C_act = centers_t[active_indices]
+            S_act = scales_t[active_indices]
+            M_act = matrices_t[active_indices]
+            M = len(active_indices)
+
+            max_pass = 5000000
+            if N * M > max_pass:
+                chunk_sz = max(1000, max_pass // M)
+                chunks = []
+                for start_idx in range(0, N, chunk_sz):
+                    p_sub = p_3d[start_idx : start_idx + chunk_sz]
+                    n_sub = p_sub.shape[0]
+                    P_shifted = (p_sub.unsqueeze(1) - C_act.unsqueeze(0)) / S_act.unsqueeze(0).unsqueeze(2)
+                    P_rotated = torch.einsum('nki,kij->nkj', P_shifted, M_act) if random_rotation else P_shifted
+                    P_flat = P_rotated.reshape(-1, 3)
+                    d_flat = other(P_flat)
+                    d_matrix = d_flat.reshape(n_sub, M) * S_act.unsqueeze(0)
+                    chunks.append(_smooth_reduce_torch(d_matrix, K))
+                d_min = torch.cat(chunks, dim=0)
+            else:
+                P_shifted = (p_3d.unsqueeze(1) - C_act.unsqueeze(0)) / S_act.unsqueeze(0).unsqueeze(2)
+                P_rotated = torch.einsum('nki,kij->nkj', P_shifted, M_act) if random_rotation else P_shifted
+                P_flat = P_rotated.reshape(-1, 3)
+                d_flat = other(P_flat)
+                d_matrix = d_flat.reshape(N, M) * S_act.unsqueeze(0)
+                d_min = _smooth_reduce_torch(d_matrix, K)
+
+            return d_min.reshape(p.shape[:-1] + (1,))
+        else:
+            p_min = p_3d.min(axis=0)
+            p_max = p_3d.max(axis=0)
+            p_center = (p_min + p_max) * 0.5
+            p_half_diag = np.linalg.norm((p_max - p_min) * 0.5)
+
+            c_dists = np.linalg.norm(centers - p_center, axis=1)
+            active = c_dists <= (p_half_diag + r_bound + 0.1)
+            active_indices = np.where(active)[0]
+
+            if len(active_indices) == 0:
+                active_indices = np.array([np.argmin(c_dists)])
+
+            C_act = centers[active_indices]
+            S_act = scales[active_indices]
+            M_act = matrices[active_indices]
+            M = len(active_indices)
+
+            max_pass = 5000000
+            if N * M > max_pass:
+                chunk_sz = max(1000, max_pass // M)
+                chunks = []
+                for start_idx in range(0, N, chunk_sz):
+                    p_sub = p_3d[start_idx : start_idx + chunk_sz]
+                    n_sub = p_sub.shape[0]
+                    P_shifted = (p_sub[:, None, :] - C_act[None, :, :]) / S_act[None, :, None]
+                    P_rotated = np.einsum('nki,kij->nkj', P_shifted, M_act) if random_rotation else P_shifted
+                    P_flat = P_rotated.reshape(-1, 3)
+                    d_flat = other(P_flat)
+                    d_matrix = d_flat.reshape(n_sub, M) * S_act[None, :]
+                    chunks.append(_smooth_reduce_numpy(d_matrix, K))
+                d_min = np.concatenate(chunks, axis=0)
+            else:
+                P_shifted = (p_3d[:, None, :] - C_act[None, :, :]) / S_act[None, :, None]
+                P_rotated = np.einsum('nki,kij->nkj', P_shifted, M_act) if random_rotation else P_shifted
+                P_flat = P_rotated.reshape(-1, 3)
+                d_flat = other(P_flat)
+                d_matrix = d_flat.reshape(N, M) * S_act[None, :]
+                d_min = _smooth_reduce_numpy(d_matrix, K)
+
+            return d_min.reshape(p.shape[:-1] + (1,))
+
+    return f
+
