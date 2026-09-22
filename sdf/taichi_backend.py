@@ -1,13 +1,75 @@
 import math
 import linecache
+import os
+import sys
 import numpy as np
 
-try:
-    import taichi as ti
-    HAS_TAICHI = True
-except ImportError:
-    ti = None
-    HAS_TAICHI = False
+_ti = None
+_HAS_TAICHI = None
+
+class SilenceOutput:
+    """Context manager to suppress low-level C stdout/stderr (e.g., third-party banners)."""
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+        self._orig_stdout = None
+        self._orig_stderr = None
+        self._null = None
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            self._orig_stdout = os.dup(1)
+            self._orig_stderr = os.dup(2)
+            self._null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(self._null, 1)
+            os.dup2(self._null, 2)
+        except Exception:
+            self._orig_stdout = None
+            self._orig_stderr = None
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._orig_stdout is not None:
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(self._orig_stdout, 1)
+                os.dup2(self._orig_stderr, 2)
+                os.close(self._orig_stdout)
+                os.close(self._orig_stderr)
+                if self._null is not None:
+                    os.close(self._null)
+            except Exception:
+                pass
+
+def get_taichi(verbose=0):
+    global _ti, _HAS_TAICHI
+    if _HAS_TAICHI is None:
+        try:
+            with SilenceOutput(enabled=(verbose < 3)):
+                import taichi as ti
+            _ti = ti
+            _HAS_TAICHI = True
+        except ImportError:
+            _ti = None
+            _HAS_TAICHI = False
+    return _ti
+
+def _check_has_taichi():
+    global _HAS_TAICHI
+    if _HAS_TAICHI is None:
+        get_taichi(verbose=0)
+    return _HAS_TAICHI
+
+class _HasTaichiProxy:
+    def __bool__(self):
+        return _check_has_taichi()
+
+HAS_TAICHI = _HasTaichiProxy()
+ti = None
 
 class SymbolicNode:
     """
@@ -136,20 +198,23 @@ def trace_sdf_to_code(sdf_obj):
 
 _TAICHI_KERNEL_CACHE = {}
 
-def init_taichi(arch=None):
-    if not HAS_TAICHI:
+def init_taichi(arch=None, verbose=0):
+    ti = get_taichi(verbose=verbose)
+    if not ti:
         raise RuntimeError("Taichi is not installed. Install via `pip install taichi`.")
     runtime = ti.lang.impl.get_runtime()
     if not getattr(runtime, "prog", None):
         if arch is None:
             arch = ti.metal
-        try:
-            ti.init(arch=arch, log_level=ti.WARN)
-        except Exception:
-            ti.init(arch=ti.cpu, log_level=ti.WARN)
+        with SilenceOutput(enabled=(verbose < 3)):
+            try:
+                ti.init(arch=arch, log_level=ti.WARN)
+            except Exception:
+                ti.init(arch=ti.cpu, log_level=ti.WARN)
 
-def get_taichi_evaluator(sdf_obj, arch=None):
-    init_taichi(arch=arch)
+def get_taichi_evaluator(sdf_obj, arch=None, verbose=0):
+    ti = get_taichi(verbose=verbose)
+    init_taichi(arch=arch, verbose=verbose)
     expr_code = trace_sdf_to_code(sdf_obj)
 
     if expr_code in _TAICHI_KERNEL_CACHE:
@@ -190,8 +255,10 @@ def {kernel_name}(
     _TAICHI_KERNEL_CACHE[expr_code] = kernel_fn
     return kernel_fn
 
-def evaluate_grid_taichi(sdf_obj, X, Y, Z, arch=None):
-    init_taichi(arch=arch)
+def evaluate_grid_taichi(sdf_obj, X, Y, Z, arch=None, verbose=0):
+    from . import progress
+    ti = get_taichi(verbose=verbose)
+    init_taichi(arch=arch, verbose=verbose)
 
     nx, ny, nz = len(X), len(Y), len(Z)
     x0, y0, z0 = float(X[0]), float(Y[0]), float(Z[0])
@@ -200,7 +267,16 @@ def evaluate_grid_taichi(sdf_obj, X, Y, Z, arch=None):
     dz = float(Z[1] - Z[0]) if nz > 1 else 1.0
 
     vol_field = ti.field(dtype=ti.f32, shape=(nx, ny, nz))
-    kernel_fn = get_taichi_evaluator(sdf_obj, arch=arch)
+    kernel_fn = get_taichi_evaluator(sdf_obj, arch=arch, verbose=verbose)
 
+    bar = progress.ProgressBar(
+        total=nx,
+        label="Evaluating Taichi shader",
+        unit="slices",
+        enabled=(verbose >= 1)
+    )
     kernel_fn(vol_field, x0, y0, z0, dx, dy, dz, nx, ny, nz)
+    bar.update(nx)
+    bar.done()
+
     return vol_field.to_numpy().astype(np.float64)

@@ -2,7 +2,7 @@
 import numpy as np
 cimport numpy as np
 
-def surface_nets_extract(volume):
+def surface_nets_extract(volume, callback=None):
     """
     Cython implementation of Surface Nets extraction.
     """
@@ -20,6 +20,8 @@ def surface_nets_extract(volume):
     
     # 1. Identify active voxels and place vertices
     for x in range(nx - 1):
+        if callback is not None:
+            callback(x + 1, nx - 1)
         for y in range(ny - 1):
             for z in range(nz - 1):
                 has_pos = False
@@ -175,7 +177,7 @@ cdef inline void add_edge(double v1, double v2, double p1[3], double p2[3], doub
         mass_point[2] += p[2]
         num_edges[0] += 1
 
-def dual_contouring_extract(volume, float qef_threshold):
+def dual_contouring_extract(volume, float qef_threshold, callback=None):
     """
     Cython implementation of Dual Contouring extraction.
     """
@@ -217,6 +219,8 @@ def dual_contouring_extract(volume, float qef_threshold):
     
     # 1. Identify active voxels and solve QEF
     for x in range(nx - 1):
+        if callback is not None:
+            callback(x + 1, nx - 1)
         for y in range(ny - 1):
             for z in range(nz - 1):
                 # Evaluate 8 corners

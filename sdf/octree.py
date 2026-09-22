@@ -48,7 +48,8 @@ def sample_volume_octree(
                 block_radii.append(r_cell)
 
     num_blocks = len(blocks)
-    if verbose:
+    vlevel = int(verbose) if isinstance(verbose, (int, bool)) else 1
+    if vlevel >= 2:
         print(f"Adaptive Octree: Partitioned grid ({nx}x{ny}x{nz}) into {num_blocks} blocks of size ~{s}^3")
 
     # 2. Evaluate coarse block centers to detect active surface blocks
@@ -100,7 +101,7 @@ def sample_volume_octree(
     prune_pct = (pruned_count / num_blocks) * 100.0 if num_blocks > 0 else 0.0
     eval_pct = (active_voxels / total_grid_voxels) * 100.0 if total_grid_voxels > 0 else 0.0
 
-    if verbose:
+    if vlevel >= 2:
         print(f"Adaptive Octree: {pruned_count}/{num_blocks} blocks pruned ({prune_pct:.1f}% space skipped).")
         print(f"Adaptive Octree: Evaluating fine grid for {active_voxels}/{total_grid_voxels} voxels ({eval_pct:.1f}% active surface).")
 
@@ -123,7 +124,16 @@ def sample_volume_octree(
     all_active_pts = np.vstack(active_points_list).astype(np.float32)
     num_active_pts = len(all_active_pts)
 
-    # 4. Evaluate active points on GPU/CPU
+    # 4. Evaluate active points on GPU/CPU with progress tracking
+    from . import progress
+    dev_label = f"GPU ({target_device})" if target_device != 'numpy' else "CPU"
+    bar = progress.ProgressBar(
+        total=num_active_pts,
+        label=f"Sampling volume ({dev_label})",
+        unit="voxels",
+        enabled=(vlevel >= 1)
+    )
+
     if target_device != 'numpy':
         import torch
         P_all = torch.as_tensor(all_active_pts, dtype=torch.float32)
@@ -134,10 +144,18 @@ def sample_volume_octree(
             with torch.no_grad():
                 res = sdf(batch_P)
             vol_flat[i : i + batch_P.shape[0]] = res.reshape(-1).cpu()
+            bar.increment(batch_P.shape[0])
 
+        bar.done()
         evaluated_dists = vol_flat.numpy().astype(np.float64)
     else:
-        evaluated_dists = sdf(all_active_pts).reshape(-1).astype(np.float64)
+        cpu_batch_size = 65536
+        evaluated_dists = np.empty(num_active_pts, dtype=np.float64)
+        for i in range(0, num_active_pts, cpu_batch_size):
+            chunk = all_active_pts[i : i + cpu_batch_size]
+            evaluated_dists[i : i + len(chunk)] = sdf(chunk).reshape(-1)
+            bar.increment(len(chunk))
+        bar.done()
 
     # 5. Insert evaluated active voxel distances back into global_vol
     curr_offset = 0
