@@ -36,5 +36,8 @@ setup(
         'Programming Language :: Python :: 3',
         'Programming Language :: Cython',
     ),
+    extras_require={
+        'neural': ['torch']
+    },
     ext_modules=ext_modules,
 )
