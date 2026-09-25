@@ -118,6 +118,7 @@ def rectangle(size=1, center=ORIGIN, a=None, b_pt=None):
 
 @sdf2
 def rounded_rectangle(size, radius, center=ORIGIN):
+    size = np.array(size)
     try:
         r0, r1, r2, r3 = radius
     except TypeError:

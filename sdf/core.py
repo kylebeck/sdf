@@ -108,35 +108,45 @@ def generate(
         step=None, bounds=None, samples=SAMPLES,
         workers=WORKERS, batch_size=BATCH_SIZE,
         verbose=True, sparse=True, method='marching_cubes',
+        strategy=None,
         qef_threshold=1e-3, device='auto', gpu_batch_size=2**20,
-        adaptive=True, block_size=16, safety_factor=1.25):
+        adaptive=True, block_size=16, safety_factor=1.25,
+        **kwargs):
 
     start = time.time()
     vlevel = int(verbose) if isinstance(verbose, (int, bool)) else 1
+
+    active_method = strategy or method
 
     if bounds is None:
         bounds = _estimate_bounds(sdf)
     (x0, y0, z0), (x1, y1, z1) = bounds
 
-    if method == 'neural_quad':
-        from . import neural
-        model, model_device = neural.bake_field(sdf, bounds, num_samples=100000, device=device, verbose=(vlevel >= 1))
-        # Returns manifold quad mesh (verts, quads) via Neural Shrinkwrapping
-        verts, elements = neural.extract_quad_mesh(model, model_device, bounds, resolution=16, verbose=(vlevel >= 1))
-        return verts, elements
 
-    if step is None and samples is not None:
-        volume = (x1 - x0) * (y1 - y0) * (z1 - z0)
-        step = (volume / samples) ** (1 / 3)
 
-    try:
-        dx, dy, dz = step
-    except TypeError:
-        dx = dy = dz = step
+    resolution = kwargs.get('resolution', None)
+    if resolution is not None:
+        X = np.linspace(x0, x1, resolution)
+        Y = np.linspace(y0, y1, resolution)
+        Z = np.linspace(z0, z1, resolution)
+        dx = (x1 - x0) / (resolution - 1) if resolution > 1 else 1.0
+        dy = (y1 - y0) / (resolution - 1) if resolution > 1 else 1.0
+        dz = (z1 - z0) / (resolution - 1) if resolution > 1 else 1.0
+        step = (dx, dy, dz)
+    else:
+        if step is None and samples is not None:
+            volume = (x1 - x0) * (y1 - y0) * (z1 - z0)
+            step = (volume / samples) ** (1 / 3)
 
-    X = np.arange(x0, x1, dx)
-    Y = np.arange(y0, y1, dy)
-    Z = np.arange(z0, z1, dz)
+        try:
+            dx, dy, dz = step
+        except TypeError:
+            dx = dy = dz = step
+
+        X = np.arange(x0, x1, dx)
+        Y = np.arange(y0, y1, dy)
+        Z = np.arange(z0, z1, dz)
+
 
     num_samples = len(X) * len(Y) * len(Z)
 
@@ -258,8 +268,14 @@ def generate(
     mesh_start = time.time()
     nx = len(X)
     mesh_bar = None
-    if vlevel >= 1 and method in ('dual_contouring', 'surface_nets'):
-        method_label = "Dual Contouring" if method == 'dual_contouring' else "Surface Nets"
+    
+    return_quads = kwargs.get('return_quads', False)
+    
+    if vlevel >= 1 and method in ('dual_contouring', 'surface_nets', 'marching_cubes'):
+        method_label = method.replace('_', ' ').title()
+        if method == 'dual_contouring' and return_quads:
+            method_label += " (Quads)"
+            
         mesh_bar = progress.ProgressBar(
             total=max(1, nx - 1),
             label=f"Extracting {method_label}",
@@ -273,19 +289,14 @@ def generate(
 
     try:
         if method == 'marching_cubes':
-            mc_bar = progress.ProgressBar(
-                total=1,
-                label="Extracting Marching Cubes",
-                unit="grid",
-                enabled=(vlevel >= 1)
-            )
             verts, faces = _marching_cubes(global_vol)
-            mc_bar.update(1)
-            mc_bar.done()
         elif method == 'surface_nets':
             verts, faces = _surface_nets(global_vol, callback=_mesh_callback)
         elif method == 'dual_contouring':
-            verts, faces = _dual_contouring(sdf, X, Y, Z, global_vol, qef_threshold, callback=_mesh_callback)
+            from . import _meshing
+            verts, faces = _meshing.dual_contouring_extract(
+                global_vol, qef_threshold, callback=_mesh_callback, return_quads=return_quads
+            )
         else:
             raise ValueError(f"Unknown meshing method: {method}")
     except Exception as e:
@@ -294,6 +305,8 @@ def generate(
         verts, faces = np.empty((0, 3)), np.empty((0, 3), dtype=int)
     finally:
         if mesh_bar is not None:
+            if method == 'marching_cubes':
+                mesh_bar.update(nx - 1)
             mesh_bar.done()
 
     mesh_time = time.time() - mesh_start
@@ -304,48 +317,91 @@ def generate(
     if len(verts) > 0:
         verts = verts * scale + offset
 
+    # Phase 3.5: Quad Feature Welding & Hardware-Accelerated Relaxation
+    relax_time = 0.0
+    if method == 'dual_contouring' and return_quads and len(verts) > 0:
+        from . import relaxation
+        relax_start = time.time()
+
+        verts, faces = relaxation.weld_quad_mesh(verts, faces)
+
+        iters = kwargs.get('iters', 8)
+        alpha = kwargs.get('alpha', 0.4)
+        crease_angle = kwargs.get('crease_angle', 35.0)
+
+        verts, faces = relaxation.relax_quad_mesh(
+            sdf, verts, faces,
+            iters=iters,
+            alpha=alpha,
+            crease_angle_deg=crease_angle,
+            device=device,
+            verbose=(vlevel >= 2)
+        )
+        relax_time = time.time() - relax_start
+
     # Phase 4: Completion Summary Badge
     total_time = time.time() - start
-    triangles = len(faces)
+    num_faces = len(faces)
     style = progress.TerminalStyle(sys.stdout)
+
+    is_quad = len(faces) > 0 and len(faces[0]) == 4
+    elem_name = "quads" if is_quad else "triangles"
 
     if vlevel >= 1:
         check = style.check_mark
-        bold_tri = style.bold(f"{triangles:,}")
+        bold_faces = style.bold(f"{num_faces:,}")
         cyan_time = style.cyan(f"{total_time:.2f}s")
-        method_name = method.replace('_', ' ').title()
+        method_name = active_method.replace('_', ' ').title()
         dev_name = "Taichi" if device == 'taichi' else ("Adaptive Octree" if adaptive else "Uniform Grid")
         grid_dims = f"{len(X)}×{len(Y)}×{len(Z)}"
         meta = style.dim(f"({grid_dims} grid, {method_name}, {dev_name})")
-        print(f"  {check} Generated {bold_tri} triangles in {cyan_time} {meta}")
+        print(f"  {check} Generated {bold_faces} {elem_name} in {cyan_time} {meta}")
 
     if vlevel >= 2:
-        print(f"    Timing: Sampling: {sample_time:.2f}s | Meshing: {mesh_time:.2f}s | Total: {total_time:.2f}s")
+        if relax_time > 0:
+            print(f"    Timing: Sampling: {sample_time:.2f}s | Meshing: {mesh_time:.2f}s | Relaxation: {relax_time:.2f}s | Total: {total_time:.2f}s")
+        else:
+            print(f"    Timing: Sampling: {sample_time:.2f}s | Meshing: {mesh_time:.2f}s | Total: {total_time:.2f}s")
         if len(verts) > 0:
-            print(f"    Geometry: {len(verts):,} vertices, {triangles:,} triangles")
+            print(f"    Geometry: {len(verts):,} vertices, {num_faces:,} {elem_name}")
 
     return verts, faces
 
+
 def save(path, *args, **kwargs):
     verbose = kwargs.get('verbose', True)
-    method = kwargs.get('method', 'marching_cubes')
+    strategy = kwargs.get('strategy', kwargs.get('method', 'marching_cubes'))
     vlevel = int(verbose) if isinstance(verbose, (int, bool)) else 1
     verts, faces = generate(*args, **kwargs)
     t0 = time.time()
     
-    if method == 'neural_quad' and path.lower().endswith('.obj'):
-        # Neural Shrinkwrap now returns fully manifold quad faces
+    is_quad = len(faces) > 0 and len(faces[0]) == 4
+    if is_quad and path.lower().endswith('.obj'):
         with open(path, 'w') as f_obj:
             for pt in verts:
                 f_obj.write(f"v {pt[0]} {pt[1]} {pt[2]}\n")
             for face in faces:
                 f_obj.write("f " + " ".join(str(i + 1) for i in face) + "\n")
     elif path.lower().endswith('.stl'):
-        points = verts[faces].reshape((-1, 3))
+        if is_quad:
+            tri_faces = []
+            for q in faces:
+                tri_faces.append([q[0], q[1], q[2]])
+                tri_faces.append([q[0], q[2], q[3]])
+            tri_faces = np.array(tri_faces, dtype=int)
+            points = verts[tri_faces].reshape((-1, 3))
+        else:
+            points = verts[faces].reshape((-1, 3))
         stl.write_binary_stl(path, points)
     else:
-        mesh = _mesh(verts, faces)
-        mesh.write(path)
+        if is_quad:
+            import meshio
+            cells = [('quad', faces)]
+            mesh = meshio.Mesh(verts, cells)
+            mesh.write(path)
+        else:
+            mesh = _mesh(verts, faces)
+            mesh.write(path)
     if vlevel >= 1:
         style = progress.TerminalStyle(sys.stdout)
         save_time = time.time() - t0

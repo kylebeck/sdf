@@ -280,3 +280,81 @@ def evaluate_grid_taichi(sdf_obj, X, Y, Z, arch=None, verbose=0):
     bar.done()
 
     return vol_field.to_numpy().astype(np.float64)
+
+_TAICHI_POINTS_GRAD_CACHE = {}
+
+def get_taichi_points_grad_evaluator(sdf_obj, arch=None, verbose=0):
+    ti = get_taichi(verbose=verbose)
+    init_taichi(arch=arch, verbose=verbose)
+    expr_code = trace_sdf_to_code(sdf_obj)
+
+    if expr_code in _TAICHI_POINTS_GRAD_CACHE:
+        return _TAICHI_POINTS_GRAD_CACHE[expr_code]
+
+    idx = len(_TAICHI_POINTS_GRAD_CACHE)
+    func_name = f"sdf_func_pg_{idx}"
+    kernel_name = f"eval_pg_kernel_{idx}"
+
+    code_str = f"""@ti.func
+def {func_name}(p: ti.template()):
+    return {expr_code}
+
+@ti.kernel
+def {kernel_name}(
+    pts: ti.types.ndarray(),
+    dists: ti.types.ndarray(),
+    grads: ti.types.ndarray(),
+    N: ti.i32,
+    eps: ti.f32
+):
+    for i in range(N):
+        p = ti.Vector([pts[i, 0], pts[i, 1], pts[i, 2]])
+        d = float({func_name}(p))
+        dists[i] = d
+        
+        dx = float({func_name}(p + ti.Vector([eps, 0.0, 0.0]))) - float({func_name}(p - ti.Vector([eps, 0.0, 0.0])))
+        dy = float({func_name}(p + ti.Vector([0.0, eps, 0.0]))) - float({func_name}(p - ti.Vector([0.0, eps, 0.0])))
+        dz = float({func_name}(p + ti.Vector([0.0, 0.0, eps]))) - float({func_name}(p - ti.Vector([0.0, 0.0, eps])))
+        
+        g = ti.Vector([dx, dy, dz]) / (2.0 * eps)
+        g_len = g.norm()
+        if g_len > 1e-12:
+            g = g / g_len
+        else:
+            g = ti.Vector([0.0, 0.0, 1.0])
+            
+        grads[i, 0] = g.x
+        grads[i, 1] = g.y
+        grads[i, 2] = g.z
+"""
+    filename = f"<taichi_sdf_pg_{idx}.py>"
+    linecache.cache[filename] = (
+        len(code_str),
+        None,
+        [line + "\n" for line in code_str.splitlines()],
+        filename
+    )
+
+    compiled_code = compile(code_str, filename, "exec")
+    exec_scope = {"ti": ti, "math": math}
+    exec(compiled_code, exec_scope)
+    kernel_fn = exec_scope[kernel_name]
+
+    _TAICHI_POINTS_GRAD_CACHE[expr_code] = kernel_fn
+    return kernel_fn
+
+def evaluate_points_and_gradients_taichi(sdf_obj, pts, eps=1e-5, arch=None, verbose=0):
+    ti = get_taichi(verbose=verbose)
+    init_taichi(arch=arch, verbose=verbose)
+    kernel_fn = get_taichi_points_grad_evaluator(sdf_obj, arch=arch, verbose=verbose)
+
+    N = len(pts)
+    pts_f32 = np.ascontiguousarray(pts, dtype=np.float32)
+    dists = np.empty(N, dtype=np.float32)
+    grads = np.empty((N, 3), dtype=np.float32)
+
+    kernel_fn(pts_f32, dists, grads, N, float(eps))
+    ti.sync()
+
+    return dists.astype(np.float64), grads.astype(np.float64)
+

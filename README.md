@@ -224,14 +224,15 @@ isn't strictly required as a dependency.
 
 ## How it Works
 
-The code simply uses the [Marching Cubes](https://en.wikipedia.org/wiki/Marching_cubes)
-algorithm to generate a mesh from the [Signed Distance Function](https://en.wikipedia.org/wiki/Signed_distance_function).
+The code uses mesh extraction algorithms like [Marching Cubes](https://en.wikipedia.org/wiki/Marching_cubes) or [Dual Contouring](https://en.wikipedia.org/wiki/Dual_contouring) to generate a mesh from the [Signed Distance Function](https://en.wikipedia.org/wiki/Signed_distance_function).
 
-This would normally be abysmally slow in Python. However, numpy is used to
-evaluate the SDF on entire batches of points simultaneously. Furthermore,
-multiple threads are used to process batches in parallel. The result is
-surprisingly fast (for marching cubes). Meshes of adequate detail can
-still be quite large in terms of number of triangles.
+While pure Python evaluation would normally be slow, the library uses [Taichi](https://taichi-lang.org/) for JIT-compiling symbolic CSG trees into highly optimized GPU compute shaders, alongside adaptive octree sampling.
+
+You can specify the extraction strategy when saving. For instance, Dual Contouring supports extracting clean, hardware-relaxed quadrilateral topologies natively (when saving to `.obj`):
+
+```python
+f.save('out.obj', method='dual_contouring') # Generates native quad topology
+```
 
 The core "engine" of the `sdf` library is very small and can be found in
 [core.py](https://github.com/fogleman/sdf/blob/main/sdf/core.py).
