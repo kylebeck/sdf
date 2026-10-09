@@ -12,10 +12,12 @@ ext_modules = cythonize([
 
 setup(
     name='sdf',
-    version='0.1',
-    description='Generate 3D meshes from signed distance functions.',
+    version='0.2.0',
+    description='Generate 3D meshes from signed distance functions with GPU acceleration and dual contouring.',
+    url='https://github.com/kylebeck/sdf',
     author='Michael Fogleman',
     author_email='michael.fogleman@gmail.com',
+    maintainer='Kyle Beck',
     packages=['sdf'],
     install_requires=[
         'matplotlib',
@@ -26,9 +28,14 @@ setup(
         'Pillow',
         'Cython',
     ],
+    extras_require={
+        'gpu': ['torch'],
+        'taichi': ['taichi'],
+        'all': ['torch', 'taichi'],
+    },
     license='MIT',
     classifiers=(
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',
         'Natural Language :: English',
         'License :: OSI Approved :: MIT License',

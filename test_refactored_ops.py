@@ -1,5 +1,11 @@
 import numpy as np
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
+
 import sdf
 from sdf import ease, bk
 
@@ -13,13 +19,12 @@ def test_bend_linear():
     assert res_np.shape == (100, 1)
     
     # PyTorch
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    # Parity check
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  bend_linear PASSED")
 
 def test_bend_radial():
@@ -30,12 +35,12 @@ def test_bend_radial():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  bend_radial PASSED")
 
 def test_transition_linear():
@@ -46,12 +51,12 @@ def test_transition_linear():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  transition_linear PASSED")
 
 def test_transition_radial():
@@ -62,12 +67,12 @@ def test_transition_radial():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  transition_radial PASSED")
 
 def test_wrap_around():
@@ -78,12 +83,12 @@ def test_wrap_around():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  wrap_around PASSED")
 
 def test_slice():
@@ -95,12 +100,12 @@ def test_slice():
     res_np = obj2d(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj2d(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj2d(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-5, atol=1e-5)
     print("  slice PASSED")
 
 if __name__ == '__main__':

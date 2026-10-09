@@ -15,7 +15,7 @@ t0 = time.time()
 verts_cpu, faces_cpu = generate(s, step=0.04, device='numpy', verbose=True)
 t_cpu = time.time() - t0
 
-print("\n--- Benchmarking GPU (PyTorch Auto/MPS) ---")
+print("\n--- Benchmarking GPU (PyTorch Auto) ---")
 t0 = time.time()
 verts_gpu, faces_gpu = generate(s, step=0.04, device='auto', verbose=True)
 t_gpu = time.time() - t0

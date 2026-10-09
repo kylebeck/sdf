@@ -1,5 +1,11 @@
 import numpy as np
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    HAS_TORCH = False
+
 import sdf
 from sdf import ease, bk
 
@@ -11,12 +17,12 @@ def test_equilateral_triangle():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  equilateral_triangle PASSED")
 
 def test_hexagon():
@@ -27,12 +33,12 @@ def test_hexagon():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  hexagon PASSED")
 
 def test_regular_polygon():
@@ -46,13 +52,13 @@ def test_regular_polygon():
     assert res5_np.shape == (100, 1)
     assert res8_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res5_torch = obj5(p_torch)
-    res8_torch = obj8(p_torch)
-    assert isinstance(res5_torch, torch.Tensor)
-    
-    np.testing.assert_allclose(bk.to_numpy(res5_torch), res5_np, rtol=1e-4, atol=1e-4)
-    np.testing.assert_allclose(bk.to_numpy(res8_torch), res8_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res5_torch = obj5(p_torch)
+        res8_torch = obj8(p_torch)
+        assert isinstance(res5_torch, torch.Tensor)
+        np.testing.assert_allclose(bk.to_numpy(res5_torch), res5_np, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(bk.to_numpy(res8_torch), res8_np, rtol=1e-4, atol=1e-4)
     print("  regular_polygon PASSED")
 
 def test_rounded_x():
@@ -63,12 +69,12 @@ def test_rounded_x():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  rounded_x PASSED")
 
 def test_vesica():
@@ -79,12 +85,12 @@ def test_vesica():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  vesica PASSED")
 
 def test_polygon():
@@ -96,12 +102,12 @@ def test_polygon():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  polygon PASSED")
 
 def test_line_segment():
@@ -112,12 +118,12 @@ def test_line_segment():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  line_segment PASSED")
 
 def test_bezier():
@@ -128,12 +134,12 @@ def test_bezier():
     res_np = obj(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  bezier PASSED")
 
 def test_extrude_to():
@@ -146,12 +152,12 @@ def test_extrude_to():
     res_np = obj3d(p_np)
     assert res_np.shape == (100, 1)
     
-    p_torch = torch.tensor(p_np, dtype=torch.float32)
-    res_torch = obj3d(p_torch)
-    assert isinstance(res_torch, torch.Tensor)
-    assert res_torch.shape == (100, 1)
-    
-    np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
+    if HAS_TORCH:
+        p_torch = torch.tensor(p_np, dtype=torch.float32)
+        res_torch = obj3d(p_torch)
+        assert isinstance(res_torch, torch.Tensor)
+        assert res_torch.shape == (100, 1)
+        np.testing.assert_allclose(bk.to_numpy(res_torch), res_np, rtol=1e-4, atol=1e-4)
     print("  extrude_to PASSED")
 
 if __name__ == '__main__':
